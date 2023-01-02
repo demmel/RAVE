@@ -15,6 +15,7 @@ import cached_conv as cc
 
 
 class Profiler:
+
     def __init__(self):
         self.ticks = [[time(), None]]
 
@@ -32,6 +33,7 @@ class Profiler:
 
 
 class Residual(nn.Module):
+
     def __init__(self, module, cumulative_delay=0):
         super().__init__()
         additional_delay = module.cumulative_delay
@@ -48,6 +50,7 @@ class Residual(nn.Module):
 
 
 class ResidualStack(nn.Module):
+
     def __init__(self,
                  dim,
                  kernel_size,
@@ -102,6 +105,7 @@ class ResidualStack(nn.Module):
 
 
 class UpsampleLayer(nn.Module):
+
     def __init__(self,
                  in_dim,
                  out_dim,
@@ -141,6 +145,7 @@ class UpsampleLayer(nn.Module):
 
 
 class NoiseGenerator(nn.Module):
+
     def __init__(self, in_size, data_size, ratios, noise_bands, padding_mode):
         super().__init__()
         net = []
@@ -184,6 +189,7 @@ class NoiseGenerator(nn.Module):
 
 
 class Generator(nn.Module):
+
     def __init__(self,
                  latent_size,
                  capacity,
@@ -292,6 +298,7 @@ class Generator(nn.Module):
 
 
 class Encoder(nn.Module):
+
     def __init__(self,
                  data_size,
                  capacity,
@@ -346,6 +353,7 @@ class Encoder(nn.Module):
 
 
 class Discriminator(nn.Module):
+
     def __init__(self, in_size, capacity, multiplier, n_layers):
         super().__init__()
 
@@ -390,6 +398,7 @@ class Discriminator(nn.Module):
 
 
 class StackDiscriminators(nn.Module):
+
     def __init__(self, n_dis, *args, **kwargs):
         super().__init__()
         self.discriminators = nn.ModuleList(
@@ -404,6 +413,7 @@ class StackDiscriminators(nn.Module):
 
 
 class RAVE(pl.LightningModule):
+
     def __init__(self,
                  data_size,
                  capacity,
@@ -557,17 +567,20 @@ class RAVE(pl.LightningModule):
         self.saved_step += 1
 
         gen_opt, dis_opt = self.optimizers()
-        x = batch.unsqueeze(1)
+        (input, label) = batch
+        input = input.unsqueeze(1)
+        label = label.unsqueeze(1)
 
         if self.pqmf is not None:  # MULTIBAND DECOMPOSITION
-            x = self.pqmf(x)
+            input = self.pqmf(input)
+            label = self.pqmf(label)
             p.tick("pqmf")
 
         if self.warmed_up:  # EVAL ENCODER
             self.encoder.eval()
 
         # ENCODE INPUT
-        z, kl = self.reparametrize(*self.encoder(x))
+        z, kl = self.reparametrize(*self.encoder(input))
         p.tick("encode")
 
         if self.warmed_up:  # FREEZE ENCODER
@@ -579,16 +592,16 @@ class RAVE(pl.LightningModule):
         p.tick("decode")
 
         # DISTANCE BETWEEN INPUT AND OUTPUT
-        distance = self.distance(x, y)
+        distance = self.distance(label, y)
         p.tick("mb distance")
 
         if self.pqmf is not None:  # FULL BAND RECOMPOSITION
-            x = self.pqmf.inverse(x)
+            label = self.pqmf.inverse(label)
             y = self.pqmf.inverse(y)
-            distance = distance + self.distance(x, y)
+            distance = distance + self.distance(label, y)
             p.tick("fb distance")
 
-        loud_x = self.loudness(x)
+        loud_x = self.loudness(label)
         loud_y = self.loudness(y)
         loud_dist = (loud_x - loud_y).pow(2).mean()
         distance = distance + loud_dist
@@ -596,7 +609,7 @@ class RAVE(pl.LightningModule):
 
         feature_matching_distance = 0.
         if self.warmed_up:  # DISCRIMINATION
-            feature_true = self.discriminator(x)
+            feature_true = self.discriminator(label)
             feature_fake = self.discriminator(y)
 
             loss_dis = 0
@@ -626,10 +639,10 @@ class RAVE(pl.LightningModule):
                 loss_adv = loss_adv + _adv
 
         else:
-            pred_true = torch.tensor(0.).to(x)
-            pred_fake = torch.tensor(0.).to(x)
-            loss_dis = torch.tensor(0.).to(x)
-            loss_adv = torch.tensor(0.).to(x)
+            pred_true = torch.tensor(0.).to(label)
+            pred_fake = torch.tensor(0.).to(label)
+            loss_dis = torch.tensor(0.).to(label)
+            loss_adv = torch.tensor(0.).to(label)
 
         # COMPOSE GEN LOSS
         beta = get_beta_kl_cyclic_annealed(
@@ -684,25 +697,28 @@ class RAVE(pl.LightningModule):
         return y
 
     def validation_step(self, batch, batch_idx):
-        x = batch.unsqueeze(1)
+        (input, label) = batch
+        input = input.unsqueeze(1)
+        label = label.unsqueeze(1)
 
         if self.pqmf is not None:
-            x = self.pqmf(x)
+            input = self.pqmf(input)
+            label = self.pqmf(label)
 
-        mean, scale = self.encoder(x)
+        mean, scale = self.encoder(input)
         z, _ = self.reparametrize(mean, scale)
         y = self.decoder(z, add_noise=self.warmed_up)
 
         if self.pqmf is not None:
-            x = self.pqmf.inverse(x)
+            label = self.pqmf.inverse(label)
             y = self.pqmf.inverse(y)
 
-        distance = self.distance(x, y)
+        distance = self.distance(label, y)
 
         if self.trainer is not None:
             self.log("validation", distance)
 
-        return torch.cat([x, y], -1), mean
+        return torch.cat([label, y], -1), mean
 
     def validation_epoch_end(self, out):
         audio, z = list(zip(*out))
