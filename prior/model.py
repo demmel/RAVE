@@ -124,7 +124,7 @@ class Model(pl.LightningModule):
         return x
 
     def training_step(self, batch, batch_idx):
-        (input, label) = batch
+        (input, _) = batch
         x = self.encode(input)
         x = self.quantized_normal.encode(self.diagonal_shift(x))
         pred = self.forward(x)
@@ -134,14 +134,14 @@ class Model(pl.LightningModule):
 
         loss = nn.functional.cross_entropy(
             pred.reshape(-1, self.quantized_normal.resolution),
-            label.reshape(-1),
+            x.reshape(-1),
         )
 
         self.log("latent_prediction", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        (input, label) = batch
+        (input, _) = batch
         x = self.encode(input)
         x = self.quantized_normal.encode(self.diagonal_shift(x))
         pred = self.forward(x)
@@ -151,14 +151,15 @@ class Model(pl.LightningModule):
 
         loss = nn.functional.cross_entropy(
             pred.reshape(-1, self.quantized_normal.resolution),
-            label.reshape(-1),
+            x.reshape(-1),
         )
 
         self.log("validation", loss)
         return batch
 
     def validation_epoch_end(self, out):
-        x = torch.randn_like(self.encode(out[0]))
+        (input, _) = out[0]
+        x = torch.randn_like(self.encode(input))
         x = self.quantized_normal.encode(self.diagonal_shift(x))
         z = self.generate(x)
         z = self.diagonal_shift.inverse(self.quantized_normal.decode(z))
